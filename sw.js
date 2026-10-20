@@ -1,5 +1,5 @@
 /* コマ帖 — オフラインでも開けるようにする */
-var CACHE = 'komacho-v0.1.0';
+var CACHE = 'komacho-v0.1.1';
 var FILES = ['./', 'index.html', 'styles.css', 'config.js', 'js/model.js', 'js/store.js', 'js/exporter.js', 'js/drive.js', 'js/app.js',
   'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 self.addEventListener('install', function (e) {
@@ -14,7 +14,9 @@ self.addEventListener('activate', function (e) {
 self.addEventListener('fetch', function (e) {
   var u = new URL(e.request.url);
   if (e.request.method !== 'GET' || u.origin !== location.origin) return;
-  e.respondWith(fetch(e.request).then(function (r) {
+  // ブラウザが覚えている古いファイルを使わず、毎回GitHubに新しいものがないか確かめる
+  var req = e.request.mode === 'navigate' ? e.request : new Request(e.request.url, { cache: 'no-cache' });
+  e.respondWith(fetch(req).then(function (r) {
     var copy = r.clone();
     caches.open(CACHE).then(function (c) { c.put(e.request, copy); });
     return r;
