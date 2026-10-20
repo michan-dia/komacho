@@ -3,5 +3,5 @@
    クライアントIDを下の '' の中に貼ってください。
    例: googleClientId: '1234567890-abcdefg.apps.googleusercontent.com' */
 window.KOMACHO_CONFIG = {
-  googleClientId: ''
+  googleClientId: '253225844303-dff6svlnqi1amlpohka27s68bjgvfg6k.apps.googleusercontent.com'
 };
