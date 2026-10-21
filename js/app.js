@@ -325,43 +325,77 @@
   /* ================= ステージ(表示) ================= */
   var wrap = $('#stageWrap'), stage = $('#stage');
 
-  function visibleSlots() {
+  // 画面に並べるページ: 行の配列(各行は画面の左から右へのページ番号、-1 は空き)
+  function visibleRows() {
     var r = wrap.getBoundingClientRect();
+    var spreads = KC.spreads(S.doc);
+    var si = Math.max(0, spreads.findIndex(function (s) { return s.indexOf(S.pageIdx) >= 0; }));
     S.base.spread = r.width >= 820 && r.width > r.height * 1.05;
-    if (!S.base.spread) return [S.pageIdx];
-    var sp = KC.spreads(S.doc).find(function (s) { return s.indexOf(S.pageIdx) >= 0; }) || [S.pageIdx, -1];
-    return [sp[1], sp[0]]; // 画面の左 = 左ページ
+    if (settings().overview) {
+      // 8ページ表示: 見開き4つ。横長の画面は2見開きずつ2段、縦長は1見開きずつ4段。右から左へ読む
+      var g = Math.floor(si / 4), group = spreads.slice(g * 4, g * 4 + 4);
+      var perRow = r.width > r.height * 0.9 ? 2 : 1, rows = [];
+      for (var k = 0; k < group.length; k += perRow) {
+        var row = [];
+        group.slice(k, k + perRow).reverse().forEach(function (sp) { row.push(sp[1], sp[0]); });
+        rows.push(row);
+      }
+      return rows;
+    }
+    if (!S.base.spread) return [[S.pageIdx]];
+    var sp = spreads[si] || [S.pageIdx, -1];
+    return [[sp[1], sp[0]]]; // 画面の左 = 左ページ
   }
 
   function layoutStage(resetView) {
     if (!S.doc) return;
     var r = wrap.getBoundingClientRect();
-    var slots = visibleSlots();
+    var rows = visibleRows(), ov = !!settings().overview;
+    var cols = rows.reduce(function (m, row) { return Math.max(m, row.length); }, 1);
+    var spreadsPerRow = Math.ceil(cols / 2);
     var pad = r.width < 500 ? 14 : 28;
-    var availW = r.width - pad * 2, availH = r.height - pad * 2 - 22;
-    var pw = Math.max(80, Math.min(availW / slots.length, availH * PW / PH));
+    var HG = ov ? 22 : 0, VG = ov ? 30 : 0; // 見開きどうしの間 / 段の間
+    var availW = r.width - pad * 2 - HG * (spreadsPerRow - 1);
+    var availH = r.height - pad * 2 - 22 - VG * (rows.length - 1);
+    var pw = Math.max(60, Math.min(availW / cols, availH / rows.length * PW / PH));
     var ph = pw * PH / PW;
-    S.base.pageW = pw; S.base.w = pw * slots.length; S.base.h = ph;
+    S.base.pageW = pw;
+    S.base.w = pw * cols + HG * (spreadsPerRow - 1);
+    S.base.h = ph * rows.length + VG * (rows.length - 1);
+    S.layoutKey = rows.map(function (row) { return row.join(','); }).join('/');
     stage.innerHTML = '';
-    stage.style.width = S.base.w + 'px'; stage.style.height = ph + 'px';
-    S.boxes = slots.map(function (idx) {
-      var box = el('div', { class: 'pagebox' + (idx < 0 ? ' blank' : idx !== S.pageIdx ? ' inactive' : '') });
-      box.style.width = pw + 'px'; box.style.height = ph + 'px';
-      var o = { idx: idx, el: box, canvas: null, overlay: null };
-      if (idx >= 0) {
-        o.canvas = document.createElement('canvas');
-        box.appendChild(o.canvas);
-        if (idx === S.pageIdx) { o.overlay = document.createElement('canvas'); box.appendChild(o.overlay); }
-        var left = KC.isLeftPage(S.doc, idx);
-        box.appendChild(el('div', { class: 'pnum', html: (idx + 1) + (left ? ' <span class="mekuri">めくり</span>' : '') }));
+    stage.classList.toggle('ov', ov);
+    stage.style.width = S.base.w + 'px'; stage.style.height = S.base.h + 'px';
+    S.boxes = [];
+    rows.forEach(function (row) {
+      var rowEl = el('div', { class: 'pagerow' });
+      rowEl.style.gap = '0 ' + HG + 'px';
+      rowEl.style.marginBottom = VG + 'px';
+      // 見開きごとにまとめる(見開きの2ページはくっつける)
+      for (var c = 0; c < row.length; c += 2) {
+        var pair = el('div', { class: 'pagepair' });
+        row.slice(c, c + 2).forEach(function (idx) {
+          var box = el('div', { class: 'pagebox' + (idx < 0 ? ' blank' : idx !== S.pageIdx ? (ov ? ' other' : ' inactive') : ' current') });
+          box.style.width = pw + 'px'; box.style.height = ph + 'px';
+          var o = { idx: idx, el: box, canvas: null, overlay: null };
+          if (idx >= 0) {
+            o.canvas = document.createElement('canvas');
+            box.appendChild(o.canvas);
+            if (idx === S.pageIdx) { o.overlay = document.createElement('canvas'); box.appendChild(o.overlay); }
+            var left = KC.isLeftPage(S.doc, idx);
+            box.appendChild(el('div', { class: 'pnum', html: (idx + 1) + (left ? ' <span class="mekuri">めくり</span>' : '') }));
+          }
+          pair.appendChild(box);
+          S.boxes.push(o);
+        });
+        rowEl.appendChild(pair);
       }
-      stage.appendChild(box);
-      return o;
+      stage.appendChild(rowEl);
     });
     if (resetView || !S.view.fitted) {
       S.view.z = 1;
       S.view.tx = (r.width - S.base.w) / 2;
-      S.view.ty = (r.height - ph - 22) / 2;
+      S.view.ty = Math.max(pad, (r.height - S.base.h - 22) / 2);
       S.view.fitted = true;
     }
     applyView();
@@ -518,17 +552,11 @@
     i = Math.max(0, Math.min(S.doc.pages.length - 1, i));
     S.selBalloon = S.selPanel = null;
     if (S.pending && !curPageHasBalloon(S.pending, i)) S.pending = null;
+    var prevKey = S.layoutKey;
     S.pageIdx = i;
     S.doc.lastPage = i;
-    layoutStage(!S.base.spread || !sameSpread(i));
-  }
-  var lastSpread = null;
-  function sameSpread(i) {
-    var sp = KC.spreads(S.doc).find(function (s) { return s.indexOf(i) >= 0; });
-    var key = sp ? sp.join(',') : '';
-    var same = key === lastSpread;
-    lastSpread = key;
-    return same;
+    var key = visibleRows().map(function (row) { return row.join(','); }).join('/');
+    if (key === prevKey) layoutStageKeep(); else layoutStage(true);
   }
   function curPageHasBalloon(id, i) { return S.doc.pages[i].balloons.some(function (b) { return b.id === id; }); }
 
@@ -865,7 +893,16 @@
     if (ptrs.size > 2 || gestureLock) return;
     var box = boxAt(e);
     if (e.button === 1 || S.tool === 'hand' || spaceDown || !box) { startPan(e); return; }
-    if (box.idx !== S.pageIdx) { act = { type: 'switch', idx: box.idx, x: e.clientX, y: e.clientY }; return; }
+    if (box.idx !== S.pageIdx) {
+      if (!settings().overview) { act = { type: 'switch', idx: box.idx, x: e.clientX, y: e.clientY }; return; }
+      // 8ページ表示: 触ったページをそのまま描く対象にする
+      S.pageIdx = box.idx; S.doc.lastPage = box.idx;
+      S.selBalloon = S.selPanel = null;
+      if (S.pending && !curPageHasBalloon(S.pending, box.idx)) S.pending = null;
+      layoutStageKeep();
+      box = activeBox();
+      if (!box) return;
+    }
     var pt = pagePoint(e, box);
     if (S.tool === 'pen' || S.tool === 'eraser') startStroke(pt);
     else if (S.tool === 'panel') startPanelAct(pt);
@@ -1502,14 +1539,21 @@
         d.vertical = !d.vertical; touch(); drawAll(); toast(d.vertical ? '縦書きにしました' : '横書きにしました');
       } },
       { label: '1ページ目の位置: ' + (d.startSide === 'right' ? '右 → 左にする' : '左 → 右にする'), run: function () {
-        d.startSide = d.startSide === 'right' ? 'left' : 'right'; touch(); lastSpread = null; layoutStage(true);
+        d.startSide = d.startSide === 'right' ? 'left' : 'right'; touch(); layoutStage(true);
       } },
       { label: 'このページのコマ割りを選ぶ', run: function () { setTool('panel'); chooseTemplate(); } },
       { label: (settings().showOrderNumbers ? '読む順の番号を隠す' : '読む順の番号を出す'), run: function () {
         KC.settings.set({ showOrderNumbers: !settings().showOrderNumbers }); drawActive();
       } },
+      { label: settings().overview ? '1ページ表示にする' : '8ページ表示にする', run: toggleOverview },
       { label: '全体を表示', run: function () { layoutStage(true); } }
     ]);
+  }
+  function toggleOverview() {
+    KC.settings.set({ overview: !settings().overview });
+    $('#toggleOverview').setAttribute('aria-pressed', String(!!settings().overview));
+    layoutStage(true);
+    toast(settings().overview ? '8ページ表示にしました。どのページにも直接描けます' : '1ページ表示にしました');
   }
   function renameDoc() {
     promptBox('名前を変える', S.doc.title).then(function (t) {
@@ -1669,6 +1713,8 @@
   $('#openScript').addEventListener('click', openScript);
   $('#openExport').addEventListener('click', function () { openSheet('exportSheet', renderExport); });
   $('#openDocMenu').addEventListener('click', docSettingsMenu);
+  $('#toggleOverview').addEventListener('click', toggleOverview);
+  $('#toggleOverview').setAttribute('aria-pressed', String(!!settings().overview));
   $('#openSettings').addEventListener('click', function () { openSheet('settingsSheet', renderSettings); });
   $('#syncChip').addEventListener('click', syncNow);
   $('#undo').addEventListener('click', undo);
