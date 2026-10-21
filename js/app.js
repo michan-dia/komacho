@@ -12,6 +12,9 @@
     doc: null,
     pageIdx: 0,
     tool: 'pen',
+    multi: [],        // セリフの複数選択(id)
+    multiMode: false, // タップで複数選択に足していくモード
+    sel: null,        // 選択した線
     selBalloon: null,
     selPanel: null,
     pending: null,       // 置く前のセリフのid
@@ -446,7 +449,13 @@
     var k = b.canvas.width / PW;
     ctx.setTransform(k, 0, 0, k, 0, 0);
     ctx.clearRect(0, 0, PW, PH);
-    KC.drawStrokes(ctx, curPage().strokes);
+    var strokes = curPage().strokes;
+    // 選択した線を動かしている途中は、動かした形で描く
+    if (S.tool === 'select' && S.sel && act && act.type === 'select' && act.m) {
+      var set = {}; S.sel.ids.forEach(function (i) { set[i] = 1; });
+      strokes = strokes.map(function (st, i) { return set[i] ? transformStroke(st, act.m, S.sel.box) : st; });
+    }
+    KC.drawStrokes(ctx, strokes);
   }
 
   function drawAll() {
@@ -482,9 +491,11 @@
     KC.drawBalloons(ctx, page, S.doc.vertical, {
       exclude: function (b) { return dragAway === b.id; },
       selectedId: S.tool === 'text' ? S.selBalloon : null,
+      isSelected: S.tool === 'text' && S.multi && S.multi.length > 1 ? function (b) { return S.multi.indexOf(b.id) >= 0; } : null,
       numbers: settings().showOrderNumbers && (S.tool === 'text')
     });
     if (S.tool === 'panel' && S.selPanel) drawPanelHandles(ctx, page);
+    if (S.tool === 'select' && S.sel) drawSelFrame(ctx);
     placePanelDelete();
   }
 
@@ -544,20 +555,39 @@
     var d = S.doc, i = S.pageIdx;
     var left = KC.isLeftPage(d, i);
     $('#pageLabel').innerHTML = '<b>' + (i + 1) + '</b> / ' + d.pages.length + (left ? '<span class="mekuri">めくり</span>' : '');
-    $('#prevPage').disabled = i <= 0;
-    $('#nextPage').disabled = i >= d.pages.length - 1;
+    if (settings().overview) {
+      var sp = KC.spreads(d), si = Math.max(0, sp.findIndex(function (s2) { return s2.indexOf(i) >= 0; }));
+      var g = Math.floor(si / 4);
+      $('#prevPage').disabled = g <= 0;
+      $('#nextPage').disabled = (g + 1) * 4 >= sp.length;
+      var pages = [].concat.apply([], sp.slice(g * 4, g * 4 + 4)).filter(function (x) { return x >= 0; });
+      $('#pageLabel').innerHTML = '<b>' + (Math.min.apply(null, pages) + 1) + '–' + (Math.max.apply(null, pages) + 1) + '</b> / ' + d.pages.length;
+    } else {
+      $('#prevPage').disabled = i <= 0;
+      $('#nextPage').disabled = i >= d.pages.length - 1;
+    }
   }
 
   function goPage(i) {
     if (!S.doc) return;
     i = Math.max(0, Math.min(S.doc.pages.length - 1, i));
-    S.selBalloon = S.selPanel = null;
+    S.selBalloon = S.selPanel = null; S.multi = []; S.sel = null;
     if (S.pending && !curPageHasBalloon(S.pending, i)) S.pending = null;
     var prevKey = S.layoutKey;
     S.pageIdx = i;
     S.doc.lastPage = i;
     var key = visibleRows().map(function (row) { return row.join(','); }).join('/');
     if (key === prevKey) layoutStageKeep(); else layoutStage(true);
+  }
+  // 前後へ: 8ページ表示のときは8ページ(見開き4つ)ずつ進む
+  function stepPage(dir) {
+    if (!settings().overview) { goPage(S.pageIdx + dir); return; }
+    var sp = KC.spreads(S.doc);
+    var si = Math.max(0, sp.findIndex(function (s2) { return s2.indexOf(S.pageIdx) >= 0; }));
+    var g = Math.floor(si / 4) + dir, gs = sp.slice(g * 4, g * 4 + 4);
+    if (g < 0 || !gs.length) return;
+    var first = gs[0].filter(function (i) { return i >= 0; })[0];
+    goPage(first);
   }
   function curPageHasBalloon(id, i) { return S.doc.pages[i].balloons.some(function (b) { return b.id === id; }); }
 
@@ -593,7 +623,7 @@
     touch();
   }
   function afterHistory(i) {
-    S.selBalloon = S.selPanel = null;
+    S.selBalloon = S.selPanel = null; S.multi = []; S.sel = null;
     if (i !== S.pageIdx) { goPage(i); }
     else { rebuildStrokeCache(); drawAll(); renderToolOpts(); }
     touch();
@@ -629,6 +659,8 @@
   /* ================= 道具 ================= */
   function setTool(t) {
     S.tool = t;
+    if (t !== 'text') S.multi = [];
+    if (t !== 'select') S.sel = null;
     if (t !== 'text') { S.selBalloon = null; S.pending = null; }
     if (t !== 'panel') S.selPanel = null;
     $$('.tool').forEach(function (b) { b.setAttribute('aria-checked', String(b.dataset.tool === t)); });
@@ -668,8 +700,63 @@
         o.appendChild(el('button', { class: 'btn small', type: 'button', text: 'コマ割りを選ぶ', onclick: chooseTemplate }));
         o.appendChild(el('button', { class: 'btn small', type: 'button', text: 'コマを足す', onclick: addPanel }));
       }
+    } else if (S.tool === 'select') {
+      if (S.sel) {
+        o.appendChild(el('span', { class: 'opt-msg', text: '中をドラッグで移動・四隅で拡大縮小・青い丸で回転' }));
+        o.appendChild(el('button', { class: 'btn small', type: 'button', text: '左右反転', onclick: selFlip }));
+        o.appendChild(el('button', { class: 'btn small', type: 'button', text: '複製', onclick: selCopy }));
+        o.appendChild(el('button', { class: 'btn small danger', type: 'button', text: '消す', onclick: selDelete }));
+        o.appendChild(el('button', { class: 'btn small', type: 'button', text: '選択をやめる', onclick: function () { S.sel = null; drawActive(); renderToolOpts(); } }));
+      } else {
+        o.appendChild(el('span', { class: 'opt-msg', text: '描いた線を指で囲むと選べます' }));
+        o.appendChild(el('button', { class: 'btn small', type: 'button', text: 'このページを全部選ぶ', onclick: function () {
+          var n = curPage().strokes.length; if (!n) { toast('このページには線がありません'); return; }
+          var ids = []; for (var i = 0; i < n; i++) ids.push(i);
+          S.sel = { ids: ids, box: strokesBox(ids) }; drawActive(); renderToolOpts();
+        } }));
+      }
     } else if (S.tool === 'text') {
       var page = curPage();
+      S.multi = S.multi || [];
+      var multiBtn = el('button', { class: 'btn small' + (S.multiMode ? ' primary' : ''), type: 'button', text: S.multiMode ? '複数選択中' : '複数選択',
+        onclick: function () { S.multiMode = !S.multiMode; if (!S.multiMode && S.multi.length <= 1) S.multi = []; renderToolOpts(); } });
+      if (S.multi.length > 1) {
+        var group = function () { var pg = curPage(); return pg.balloons.filter(function (x) { return S.multi.indexOf(x.id) >= 0; }); };
+        var applyAll = function (fn) {
+          var bs = group(); if (!bs.length) { S.multi = []; renderToolOpts(); return; }
+          var before = snap(); bs.forEach(fn); commit(before); drawActive();
+        };
+        var bs0 = group();
+        var kinds = bs0.map(function (x) { return x.kind; });
+        var sameKind = kinds.every(function (k) { return k === kinds[0]; }) ? kinds[0] : null;
+        o.appendChild(multiBtn);
+        o.appendChild(el('span', { class: 'opt-label', text: bs0.length + '個選択中' }));
+        o.appendChild(segmented(KIND_OPTS, sameKind, function (v) {
+          applyAll(function (x) { var lv = sizeLevel(x); x.kind = v; x.fs = defaultFs(v, lv); });
+          KC.settings.set({ lastKind: v });
+        }));
+        o.appendChild(el('span', { class: 'opt-label', text: '文字' }));
+        o.appendChild(segmented([{ label: '小', value: 0 }, { label: '中', value: 1 }, { label: '大', value: 2 }], null, function (lv) {
+          applyAll(function (x) { x.fs = defaultFs(x.kind, lv); });
+        }));
+        o.appendChild(el('button', { class: 'btn small', type: 'button', text: '小さく', onclick: function () { applyAll(function (x) { x.fs = Math.max(14, Math.round(x.fs / 1.15)); }); } }));
+        o.appendChild(el('button', { class: 'btn small', type: 'button', text: '大きく', onclick: function () { applyAll(function (x) { x.fs = Math.min(96, Math.round(x.fs * 1.15)); }); } }));
+        o.appendChild(el('button', { class: 'btn small danger', type: 'button', text: '消す', onclick: function () {
+          var ids = S.multi.slice(), before = snap();
+          curPage().balloons = curPage().balloons.filter(function (x) { return ids.indexOf(x.id) < 0; });
+          S.multi = []; S.selBalloon = null; commit(before); drawActive(); renderToolOpts();
+          if (!$('#scriptDrawer').hidden) renderScript();
+        } }));
+        o.appendChild(el('button', { class: 'btn small', type: 'button', text: '選択をやめる', onclick: function () { S.multi = []; S.selBalloon = null; drawActive(); renderToolOpts(); } }));
+        return;
+      }
+      o.appendChild(multiBtn);
+      if (page.balloons.some(function (x) { return x.placed; })) {
+        o.appendChild(el('button', { class: 'btn small', type: 'button', text: '全部選ぶ', onclick: function () {
+          S.multi = curPage().balloons.filter(function (x) { return x.placed; }).map(function (x) { return x.id; });
+          syncMultiSel(); drawActive(); renderToolOpts();
+        } }));
+      }
       var sel = page.balloons.find(function (b) { return b.id === S.selBalloon; });
       if (sel) {
         // ボタンを押したときに、いまのページから選んでいる吹き出しを探しなおす
@@ -906,7 +993,7 @@
       if (!settings().overview) { act = { type: 'switch', idx: box.idx, x: e.clientX, y: e.clientY }; return; }
       // 8ページ表示: 触ったページをそのまま描く対象にする
       S.pageIdx = box.idx; S.doc.lastPage = box.idx;
-      S.selBalloon = S.selPanel = null;
+      S.selBalloon = S.selPanel = null; S.multi = []; S.sel = null;
       if (S.pending && !curPageHasBalloon(S.pending, box.idx)) S.pending = null;
       layoutStageKeep();
       box = activeBox();
@@ -916,6 +1003,7 @@
     if (S.tool === 'pen' || S.tool === 'eraser') startStroke(pt);
     else if (S.tool === 'panel') startPanelAct(pt);
     else if (S.tool === 'text') startTextAct(pt, e);
+    else if (S.tool === 'select') startSelectAct(pt);
   });
 
   wrap.addEventListener('pointermove', function (e) {
@@ -931,6 +1019,7 @@
       evs.forEach(function (ev) { addStrokePoint(pagePoint(ev, box)); });
     } else if (act.type === 'panel') movePanelAct(pagePoint(e, box));
     else if (act.type === 'text') moveTextAct(pagePoint(e, box), e);
+    else if (act.type === 'select') moveSelectAct(pagePoint(e, box));
   });
 
   function endPointer(e) {
@@ -946,12 +1035,13 @@
     var a = act; act = null;
     if (e.type === 'pointercancel') { cancelActionObj(a); return; }
     if (a.type === 'switch') {
-      if (Math.hypot(e.clientX - a.x, e.clientY - a.y) < 10) { S.pageIdx = a.idx; S.doc.lastPage = a.idx; S.selBalloon = S.selPanel = null; layoutStageKeep(); }
+      if (Math.hypot(e.clientX - a.x, e.clientY - a.y) < 10) { S.pageIdx = a.idx; S.doc.lastPage = a.idx; S.selBalloon = S.selPanel = null; S.multi = []; S.sel = null; layoutStageKeep(); }
       return;
     }
     var box = activeBox(), pt = pagePoint(e, box);
     if (a.type === 'stroke') endStroke(a);
     else if (a.type === 'panel') endPanelAct(a, pt);
+    else if (a.type === 'select') endSelectAct(a, pt);
     else if (a.type === 'text') endTextAct(a, pt);
   }
   wrap.addEventListener('pointerup', endPointer);
@@ -967,10 +1057,11 @@
   function cancelAction() { if (act) { cancelActionObj(act); act = null; } }
   function cancelActionObj(a) {
     if (dragAway) { dragAway = null; clearOtherOverlays(); }
-    if ((a.type === 'stroke' || a.type === 'panel' || a.type === 'text') && a.before) {
+    if ((a.type === 'stroke' || a.type === 'panel' || a.type === 'text' || a.type === 'select') && a.before) {
       S.doc.pages[S.pageIdx] = JSON.parse(a.before);
       rebuildStrokeCache();
     }
+    if (a.type === 'select') { S.sel = null; rebuildStrokeCache(); renderToolOpts(); }
     clearOverlay();
     drawActive();
   }
@@ -1182,9 +1273,158 @@
     drawActive(); renderToolOpts();
   }
 
+  // ----- 選択(描いた線を囲んで、移動・拡大縮小・回転) -----
+  // S.sel = { ids: [線の番号], box: {x, y, w, h} }。動かしている間だけ act.m = {tx, ty, s, r}
+  function selCenter(box) { return { x: box.x + box.w / 2, y: box.y + box.h / 2 }; }
+  function xf(x, y, m, box) {
+    var c = selCenter(box), dx = (x - c.x) * m.s, dy = (y - c.y) * m.s;
+    var cos = Math.cos(m.r), sin = Math.sin(m.r);
+    return { x: c.x + dx * cos - dy * sin + m.tx, y: c.y + dx * sin + dy * cos + m.ty };
+  }
+  function transformStroke(st, m, box) {
+    var p = st.p, out = new Array(p.length);
+    for (var i = 0; i < p.length; i += 2) { var q = xf(p[i], p[i + 1], m, box); out[i] = q.x; out[i + 1] = q.y; }
+    return Object.assign({}, st, { p: out, s: Math.max(0.5, st.s * m.s) });
+  }
+  function strokesBox(ids) {
+    var st = curPage().strokes, x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    ids.forEach(function (i) {
+      var s2 = st[i], h = s2.s / 2;
+      for (var k = 0; k < s2.p.length; k += 2) {
+        x0 = Math.min(x0, s2.p[k] - h); x1 = Math.max(x1, s2.p[k] + h);
+        y0 = Math.min(y0, s2.p[k + 1] - h); y1 = Math.max(y1, s2.p[k + 1] + h);
+      }
+    });
+    return { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) };
+  }
+  function inPoly(poly, x, y) {
+    var c = false, n = poly.length / 2;
+    for (var i = 0, j = n - 1; i < n; j = i++) {
+      var xi = poly[i * 2], yi = poly[i * 2 + 1], xj = poly[j * 2], yj = poly[j * 2 + 1];
+      if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c;
+    }
+    return c;
+  }
+  function selCorners(m) {
+    var b = S.sel.box, I = { tx: 0, ty: 0, s: 1, r: 0 };
+    m = m || I;
+    return [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]].map(function (q) { return xf(q[0], q[1], m, b); });
+  }
+  function selRotHandle(m) {
+    var b = S.sel.box, I = { tx: 0, ty: 0, s: 1, r: 0 }; m = m || I;
+    var off = 40 / unitsPerPx() / m.s;
+    return xf(b.x + b.w / 2, b.y - off, m, b);
+  }
+  function drawSelFrame(ctx) {
+    var m = act && act.type === 'select' && act.m ? act.m : null;
+    var cs = selCorners(m), rh = selRotHandle(m), u = unitsPerPx();
+    var topMid = { x: (cs[0].x + cs[1].x) / 2, y: (cs[0].y + cs[1].y) / 2 };
+    ctx.save();
+    ctx.strokeStyle = '#2f6fe4'; ctx.lineWidth = 1.6 / u; ctx.setLineDash([8 / u, 5 / u]);
+    ctx.beginPath(); cs.forEach(function (c, i) { if (i) ctx.lineTo(c.x, c.y); else ctx.moveTo(c.x, c.y); }); ctx.closePath(); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(topMid.x, topMid.y); ctx.lineTo(rh.x, rh.y); ctx.stroke();
+    var r = 8 / u;
+    cs.forEach(function (c) { ctx.fillStyle = '#fff'; ctx.fillRect(c.x - r, c.y - r, r * 2, r * 2); ctx.strokeRect(c.x - r, c.y - r, r * 2, r * 2); });
+    ctx.beginPath(); ctx.arc(rh.x, rh.y, r * 1.1, 0, Math.PI * 2); ctx.fillStyle = '#2f6fe4'; ctx.fill();
+    ctx.restore();
+  }
+  function startSelectAct(pt) {
+    var tol = 24 / unitsPerPx();
+    act = { type: 'select', before: snap(), start: pt, moved: false };
+    if (S.sel) {
+      var rh = selRotHandle(), cs = selCorners(), c = selCenter(S.sel.box);
+      if (Math.hypot(pt.x - rh.x, pt.y - rh.y) < tol) { act.mode = 'rotate'; act.a0 = Math.atan2(pt.y - c.y, pt.x - c.x); }
+      else if (cs.some(function (q) { return Math.hypot(pt.x - q.x, pt.y - q.y) < tol; })) { act.mode = 'scale'; act.d0 = Math.max(1, Math.hypot(pt.x - c.x, pt.y - c.y)); }
+      else if (inPoly([].concat.apply([], cs.map(function (q) { return [q.x, q.y]; })), pt.x, pt.y)) act.mode = 'move';
+      if (act.mode) { act.m = { tx: 0, ty: 0, s: 1, r: 0 }; return; }
+    }
+    act.mode = 'lasso'; act.poly = [pt.x, pt.y];
+  }
+  function moveSelectAct(pt) {
+    if (Math.hypot(pt.x - act.start.x, pt.y - act.start.y) > 4 / unitsPerPx()) act.moved = true;
+    if (act.mode === 'lasso') {
+      act.poly.push(pt.x, pt.y);
+      var ov = activeBox().overlay, ctx = ov.getContext('2d'), k = ov.width / PW;
+      ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, ov.width, ov.height);
+      ctx.setTransform(k, 0, 0, k, 0, 0);
+      ctx.strokeStyle = '#2f6fe4'; ctx.lineWidth = 1.6 / unitsPerPx(); ctx.setLineDash([6 / unitsPerPx(), 4 / unitsPerPx()]);
+      ctx.fillStyle = 'rgba(47,111,228,.07)';
+      ctx.beginPath(); ctx.moveTo(act.poly[0], act.poly[1]);
+      for (var i = 2; i < act.poly.length; i += 2) ctx.lineTo(act.poly[i], act.poly[i + 1]);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      return;
+    }
+    var c = selCenter(S.sel.box);
+    if (act.mode === 'move') { act.m.tx = pt.x - act.start.x; act.m.ty = pt.y - act.start.y; }
+    else if (act.mode === 'scale') act.m.s = Math.max(0.05, Math.hypot(pt.x - c.x, pt.y - c.y) / act.d0);
+    else if (act.mode === 'rotate') {
+      var a = Math.atan2(pt.y - c.y, pt.x - c.x) - act.a0;
+      var deg = a * 180 / Math.PI, snapTo = Math.round(deg / 45) * 45;
+      if (Math.abs(deg - snapTo) < 4) a = snapTo * Math.PI / 180; // 45度ごとに少し吸いつく
+      act.m.r = a;
+    }
+    rebuildStrokeCache(); requestDraw();
+  }
+  function endSelectAct(a) {
+    if (a.mode === 'lasso') {
+      clearOverlay();
+      if (!a.moved || a.poly.length < 6) { S.sel = null; drawActive(); renderToolOpts(); return; }
+      var st = curPage().strokes, ids = [];
+      st.forEach(function (s2, i) {
+        var n = s2.p.length / 2, inside = 0;
+        for (var k = 0; k < s2.p.length; k += 2) if (inPoly(a.poly, s2.p[k], s2.p[k + 1])) inside++;
+        if (inside / n >= 0.5) ids.push(i);
+      });
+      S.sel = ids.length ? { ids: ids, box: strokesBox(ids) } : null;
+      if (!ids.length) toast('囲んだ中に線がありませんでした');
+      drawActive(); renderToolOpts();
+      return;
+    }
+    if (!a.moved) { act = null; drawActive(); return; }
+    var page = curPage(), m = a.m, box = S.sel.box;
+    S.sel.ids.forEach(function (i) {
+      var t = transformStroke(page.strokes[i], m, box);
+      t.p = t.p.map(KC.round); t.s = KC.round(t.s);
+      page.strokes[i] = t;
+    });
+    S.sel.box = strokesBox(S.sel.ids);
+    commit(a.before);
+    rebuildStrokeCache(); drawActive();
+  }
+  function selDelete() {
+    if (!S.sel) return;
+    var before = snap(), set = {};
+    S.sel.ids.forEach(function (i) { set[i] = 1; });
+    curPage().strokes = curPage().strokes.filter(function (_, i) { return !set[i]; });
+    S.sel = null; commit(before); rebuildStrokeCache(); drawActive(); renderToolOpts();
+  }
+  function selFlip() {
+    if (!S.sel) return;
+    var before = snap(), page = curPage(), c = selCenter(S.sel.box);
+    S.sel.ids.forEach(function (i) {
+      var st = page.strokes[i];
+      st.p = st.p.map(function (v, k) { return k % 2 === 0 ? KC.round(2 * c.x - v) : v; });
+    });
+    commit(before); rebuildStrokeCache(); drawActive();
+  }
+  function selCopy() {
+    if (!S.sel) return;
+    var before = snap(), page = curPage(), start = page.strokes.length;
+    S.sel.ids.forEach(function (i) {
+      var st = JSON.parse(JSON.stringify(page.strokes[i]));
+      st.p = st.p.map(function (v) { return KC.round(v + 30); });
+      page.strokes.push(st);
+    });
+    var ids = []; for (var k = start; k < page.strokes.length; k++) ids.push(k);
+    S.sel = { ids: ids, box: strokesBox(ids) };
+    commit(before); rebuildStrokeCache(); drawActive();
+  }
+
   // ----- セリフ -----
-  function startTextAct(pt) {
+  function startTextAct(pt, e) {
     var page = curPage();
+    S.multi = S.multi || [];
     if (S.pending) {
       var pb = page.balloons.find(function (b) { return b.id === S.pending; });
       if (pb) {
@@ -1197,15 +1437,49 @@
       S.pending = null;
     }
     var b = KC.balloonAt(page, pt.x, pt.y, S.doc.vertical);
+    var multiKey = S.multiMode || (e && (e.shiftKey || e.ctrlKey || e.metaKey));
+    if (multiKey) {
+      // 複数選択: タップで選択に足す/外す。選んだものはまとめてドラッグできる
+      if (!S.multi.length && S.selBalloon) S.multi = [S.selBalloon];
+      if (!b) { act = { type: 'text', before: snap(), start: pt, moved: false, b: null, multiClear: true }; return; }
+      var had = S.multi.indexOf(b.id) >= 0;
+      if (!had) S.multi.push(b.id);
+      startGroupDrag(b, pt, had);
+      syncMultiSel(); drawActive(); renderToolOpts();
+      return;
+    }
+    if (b && S.multi.length > 1 && S.multi.indexOf(b.id) >= 0) { startGroupDrag(b, pt, false); return; }
+    S.multi = [];
     act = { type: 'text', before: snap(), start: pt, moved: false, b: b, wasSel: b && S.selBalloon === b.id };
     if (b) {
       act.off = { x: b.x - pt.x, y: b.y - pt.y };
       if (S.selBalloon !== b.id) { S.selBalloon = b.id; drawActive(); renderToolOpts(); }
     }
   }
+  function startGroupDrag(b, pt, toggleOffOnTap) {
+    var page = curPage();
+    act = { type: 'text', before: snap(), start: pt, moved: false, b: b, group: page.balloons.filter(function (x) { return S.multi.indexOf(x.id) >= 0; })
+      .map(function (x) { return { b: x, x: x.x, y: x.y }; }), toggleOff: toggleOffOnTap };
+  }
+  // 1つだけになったら普通の選択に戻す
+  function syncMultiSel() {
+    var page = curPage();
+    S.multi = S.multi.filter(function (id) { return page.balloons.some(function (x) { return x.id === id; }); });
+    if (S.multi.length === 1) { S.selBalloon = S.multi[0]; }
+    else if (S.multi.length === 0) S.selBalloon = null;
+    else S.selBalloon = S.multi[S.multi.length - 1];
+  }
   var dragAway = null; // 別のページへ持っていく途中の吹き出しのid
   function moveTextAct(pt, e) {
     if (Math.hypot(pt.x - act.start.x, pt.y - act.start.y) > 6 / unitsPerPx()) act.moved = true;
+    if (act.group) {
+      if (!act.moved) return;
+      var dx = pt.x - act.start.x, dy = pt.y - act.start.y;
+      act.group.forEach(function (g) { g.b.x = KC.round(g.x + dx); g.b.y = KC.round(g.y + dy); });
+      requestDraw();
+      return;
+    }
+    if (act.multiClear) return;
     if (act.b && act.moved) {
       // 8ページ表示: 指が別のページの上にあれば、そのページに下見を出す
       var tb = settings().overview ? boxAt(e) : null;
@@ -1278,6 +1552,15 @@
     });
   }
   function endTextAct(a, pt) {
+    if (a.multiClear) {
+      if (!a.moved) { S.multi = []; S.selBalloon = null; drawActive(); renderToolOpts(); }
+      return;
+    }
+    if (a.group) {
+      if (a.moved) { commit(a.before); drawActive(); return; }
+      if (a.toggleOff) { S.multi = S.multi.filter(function (id) { return id !== a.b.id; }); syncMultiSel(); drawActive(); renderToolOpts(); }
+      return;
+    }
     if (a.b) {
       var wasAway = dragAway; dragAway = null; clearOtherOverlays();
       if (a.moved && a.target) { lastTap = null; moveBalloonToPage(a); return; }
@@ -1307,13 +1590,15 @@
     if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
     if (mod) return;
     if (e.key === ' ') { spaceDown = true; wrap.dataset.tool = 'hand'; e.preventDefault(); return; }
-    var map = { p: 'pen', b: 'pen', e: 'eraser', k: 'panel', t: 'text', h: 'hand' };
+    var map = { p: 'pen', b: 'pen', e: 'eraser', k: 'panel', t: 'text', h: 'hand', v: 'select', s: 'select' };
     if (map[e.key.toLowerCase()]) { setTool(map[e.key.toLowerCase()]); return; }
-    if (e.key === 'ArrowLeft' || e.key === 'PageDown') { goPage(S.pageIdx + 1); return; }
-    if (e.key === 'ArrowRight' || e.key === 'PageUp') { goPage(S.pageIdx - 1); return; }
-    if (e.key === 'Escape') { S.selBalloon = S.selPanel = S.pending = null; drawActive(); renderToolOpts(); closeSheet(); return; }
+    if (e.key === 'ArrowLeft' || e.key === 'PageDown') { stepPage(1); return; }
+    if (e.key === 'ArrowRight' || e.key === 'PageUp') { stepPage(-1); return; }
+    if (e.key === 'Escape') { S.selBalloon = S.selPanel = S.pending = null; S.multi = []; S.sel = null; rebuildStrokeCache(); drawActive(); renderToolOpts(); closeSheet(); return; }
     if (e.key === 'Delete' || e.key === 'Backspace') {
-      if (S.tool === 'text' && S.selBalloon) { var b = curPage().balloons.find(function (x) { return x.id === S.selBalloon; }); if (b) deleteBalloon(b); }
+      if (S.tool === 'select' && S.sel) selDelete();
+      else if (S.tool === 'text' && S.multi && S.multi.length > 1) { var ids = S.multi.slice(), bf = snap(); curPage().balloons = curPage().balloons.filter(function (x) { return ids.indexOf(x.id) < 0; }); S.multi = []; S.selBalloon = null; commit(bf); drawActive(); renderToolOpts(); }
+      else if (S.tool === 'text' && S.selBalloon) { var b = curPage().balloons.find(function (x) { return x.id === S.selBalloon; }); if (b) deleteBalloon(b); }
       else if (S.tool === 'panel' && S.selPanel) deleteSelPanel();
       return;
     }
@@ -1795,8 +2080,8 @@
   $('#syncChip').addEventListener('click', syncNow);
   $('#undo').addEventListener('click', undo);
   $('#redo').addEventListener('click', redo);
-  $('#prevPage').addEventListener('click', function () { goPage(S.pageIdx - 1); });
-  $('#nextPage').addEventListener('click', function () { goPage(S.pageIdx + 1); });
+  $('#prevPage').addEventListener('click', function () { stepPage(-1); });
+  $('#nextPage').addEventListener('click', function () { stepPage(1); });
 
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'hidden') {

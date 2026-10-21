@@ -566,7 +566,7 @@
     KC.balloonGroups(list, vertical).forEach(function (g) { drawGroup(ctx, g, vertical); });
     var order = opt.numbers ? KC.orderedBalloons(page, vertical).filter(function (b) { return b.placed; }) : null;
     list.forEach(function (b) {
-      var sel = opt.selectedId === b.id, num = order ? order.indexOf(b) + 1 : 0;
+      var sel = opt.isSelected ? opt.isSelected(b) : opt.selectedId === b.id, num = order ? order.indexOf(b) + 1 : 0;
       if (sel || num) drawMarks(ctx, KC.layoutBalloon(b, vertical), { selected: sel, number: num });
     });
   };
