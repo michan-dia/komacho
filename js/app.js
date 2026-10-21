@@ -381,7 +381,7 @@
           if (idx >= 0) {
             o.canvas = document.createElement('canvas');
             box.appendChild(o.canvas);
-            if (idx === S.pageIdx) { o.overlay = document.createElement('canvas'); box.appendChild(o.overlay); }
+            if (idx === S.pageIdx || ov) { o.overlay = document.createElement('canvas'); box.appendChild(o.overlay); }
             var left = KC.isLeftPage(S.doc, idx);
             box.appendChild(el('div', { class: 'pnum', html: (idx + 1) + (left ? ' <span class="mekuri">めくり</span>' : '') }));
           }
@@ -480,6 +480,7 @@
     ctx.drawImage(strokeCache, 0, 0);
     ctx.setTransform(k, 0, 0, k, 0, 0);
     KC.drawBalloons(ctx, page, S.doc.vertical, {
+      exclude: function (b) { return dragAway === b.id; },
       selectedId: S.tool === 'text' ? S.selBalloon : null,
       numbers: settings().showOrderNumbers && (S.tool === 'text')
     });
@@ -572,22 +573,29 @@
     S.fut = [];
     touch();
   }
+  // ページをまたぐ変更は { multi: [{i, b, a}, …], i } の1つの履歴にする
   function undo() {
     var e = S.hist.pop(); if (!e) return;
-    S.doc.pages[e.i] = JSON.parse(e.b);
+    (e.multi || [e]).forEach(function (x) { S.doc.pages[x.i] = JSON.parse(x.b); });
     S.fut.push(e);
     afterHistory(e.i);
   }
   function redo() {
     var e = S.fut.pop(); if (!e) return;
-    S.doc.pages[e.i] = JSON.parse(e.a);
+    (e.multi || [e]).forEach(function (x) { S.doc.pages[x.i] = JSON.parse(x.a); });
     S.hist.push(e);
     afterHistory(e.i);
+  }
+  function commitMulti(entries, focusIdx) {
+    S.hist.push({ multi: entries, i: focusIdx });
+    if (S.hist.length > 80) S.hist.shift();
+    S.fut = [];
+    touch();
   }
   function afterHistory(i) {
     S.selBalloon = S.selPanel = null;
     if (i !== S.pageIdx) { goPage(i); }
-    else { rebuildStrokeCache(); drawActive(); renderToolOpts(); }
+    else { rebuildStrokeCache(); drawAll(); renderToolOpts(); }
     touch();
   }
   function updateUndo() {
@@ -683,6 +691,7 @@
         })));
         o.appendChild(el('button', { class: 'btn small', type: 'button', text: '小さく', onclick: withSel(function (b) { resizeBalloon(b, -1); }) }));
         o.appendChild(el('button', { class: 'btn small', type: 'button', text: '大きく', onclick: withSel(function (b) { resizeBalloon(b, 1); }) }));
+        o.appendChild(el('button', { class: 'btn small', type: 'button', text: '別のページへ', onclick: withSel(function (b) { askMovePage(b); }) }));
         o.appendChild(el('button', { class: 'btn small danger', type: 'button', text: '消す', onclick: withSel(function (b) { deleteBalloon(b); }) }));
       } else {
         var unplaced = page.balloons.filter(function (b) { return !b.placed; });
@@ -957,6 +966,7 @@
 
   function cancelAction() { if (act) { cancelActionObj(act); act = null; } }
   function cancelActionObj(a) {
+    if (dragAway) { dragAway = null; clearOtherOverlays(); }
     if ((a.type === 'stroke' || a.type === 'panel' || a.type === 'text') && a.before) {
       S.doc.pages[S.pageIdx] = JSON.parse(a.before);
       rebuildStrokeCache();
@@ -1193,9 +1203,27 @@
       if (S.selBalloon !== b.id) { S.selBalloon = b.id; drawActive(); renderToolOpts(); }
     }
   }
+  var dragAway = null; // 別のページへ持っていく途中の吹き出しのid
   function moveTextAct(pt, e) {
     if (Math.hypot(pt.x - act.start.x, pt.y - act.start.y) > 6 / unitsPerPx()) act.moved = true;
     if (act.b && act.moved) {
+      // 8ページ表示: 指が別のページの上にあれば、そのページに下見を出す
+      var tb = settings().overview ? boxAt(e) : null;
+      clearOtherOverlays();
+      if (tb && tb.idx >= 0 && tb.idx !== S.pageIdx) {
+        var tp = pagePoint(e, tb);
+        var ghost = Object.assign({}, act.b, { x: KC.round(tp.x + act.off.x), y: KC.round(tp.y + act.off.y) });
+        var octx = tb.overlay.getContext('2d'), k = tb.overlay.width / PW;
+        octx.setTransform(k, 0, 0, k, 0, 0);
+        octx.globalAlpha = 0.85;
+        KC.drawBalloon(octx, ghost, S.doc.vertical, { selected: true });
+        octx.globalAlpha = 1;
+        act.target = { idx: tb.idx, x: ghost.x, y: ghost.y };
+        if (dragAway !== act.b.id) { dragAway = act.b.id; requestDraw(); }
+        return;
+      }
+      act.target = null;
+      if (dragAway) { dragAway = null; }
       act.b.x = KC.round(pt.x + act.off.x); act.b.y = KC.round(pt.y + act.off.y);
       requestDraw();
     } else if (!act.b && act.moved) {
@@ -1204,8 +1232,56 @@
     }
   }
   var lastTap = null;
+  function clearOtherOverlays() {
+    S.boxes.forEach(function (b) {
+      if (!b.overlay || b.idx === S.pageIdx) return;
+      var c = b.overlay.getContext('2d'); c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, b.overlay.width, b.overlay.height);
+    });
+  }
+  // 吹き出しを別のページへ移す(元のページから消して、移した先のページに入れる)
+  function moveBalloonToPage(a) {
+    var from = S.pageIdx, to = a.target.idx;
+    var srcBefore = a.before, dstBefore = JSON.stringify(S.doc.pages[to]);
+    var src = S.doc.pages[from], dst = S.doc.pages[to];
+    var b = src.balloons.find(function (x) { return x.id === a.b.id; });
+    if (!b) return;
+    src.balloons = src.balloons.filter(function (x) { return x.id !== b.id; });
+    b.x = a.target.x; b.y = a.target.y; b.placed = true;
+    dst.balloons.push(b);
+    commitMulti([
+      { i: from, b: srcBefore, a: JSON.stringify(src) },
+      { i: to, b: dstBefore, a: JSON.stringify(dst) }
+    ], to);
+    S.pageIdx = to; S.doc.lastPage = to; S.selBalloon = b.id;
+    layoutStageKeep();
+    toast((from + 1) + 'ページから' + (to + 1) + 'ページへ移しました');
+  }
+  // ページ番号を選んで移す(同じ位置に置く)
+  function askMovePage(b) {
+    var n = S.doc.pages.length, cur = S.pageIdx;
+    openModal(function (c, api) {
+      c.appendChild(el('h2', { text: 'どのページへ移しますか？' }));
+      var inp = el('input', { type: 'number', id: 'movePageNo', min: '1', max: String(n), value: String(Math.min(n, cur + 2)), inputmode: 'numeric', autofocus: true });
+      c.appendChild(el('div', { class: 'field' }, [el('label', { class: 'fl', text: '1〜' + n + 'ページ' }), inp]));
+      var ok = function () {
+        var to = parseInt(inp.value, 10) - 1;
+        if (!(to >= 0 && to < n) || to === cur) { inp.focus(); return; }
+        api.close();
+        moveBalloonToPage({ before: JSON.stringify(S.doc.pages[cur]), b: b, target: { idx: to, x: b.x, y: b.y } });
+        if (!settings().overview) goPage(to);
+      };
+      inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') ok(); });
+      c.appendChild(el('div', { class: 'modal-foot' }, [
+        el('button', { class: 'btn', type: 'button', text: 'やめる', onclick: function () { api.close(); } }),
+        el('button', { class: 'btn primary', type: 'button', text: '移す', onclick: ok })
+      ]));
+    });
+  }
   function endTextAct(a, pt) {
     if (a.b) {
+      var wasAway = dragAway; dragAway = null; clearOtherOverlays();
+      if (a.moved && a.target) { lastTap = null; moveBalloonToPage(a); return; }
+      if (wasAway) drawActive();
       if (a.moved) { commit(a.before); lastTap = null; return; }
       // 同じ吹き出しをすばやく2回タップで文字を直す(1回目は選ぶだけ)
       var now = Date.now();
