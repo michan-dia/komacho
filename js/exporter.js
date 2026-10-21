@@ -114,6 +114,62 @@
     return next().then(function () { return KC.makeZip(files); });
   };
 
+  /* ---------- PDF(全ページを1つのファイルに) ----------
+     1ページ = 仕上がりB5(182×257mm)。各ページはJPEG画像として入れる */
+  function canvasToJpeg(canvas, q) {
+    return new Promise(function (res) {
+      canvas.toBlob(function (b) { b.arrayBuffer().then(function (ab) { res(new Uint8Array(ab)); }); }, 'image/jpeg', q);
+    });
+  }
+  KC.buildPDF = function (images, title) { // images: [{w, h, jpeg: Uint8Array}]
+    var enc = new TextEncoder(), parts = [], offsets = [], len = 0;
+    function add(x) { var b = typeof x === 'string' ? enc.encode(x) : x; parts.push(b); len += b.length; }
+    function obj(n, body) { offsets[n] = len; add(n + ' 0 obj\n'); body(); add('\nendobj\n'); }
+    var PW_PT = 182 / 25.4 * 72, PH_PT = 257 / 25.4 * 72;
+    var n = images.length, kids = [];
+    // 1: カタログ 2: ページ一覧 3: 情報 そのあと ページごとに [ページ, 中身, 画像]
+    for (var i = 0; i < n; i++) kids.push((4 + i * 3) + ' 0 R');
+    add(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2D, 0x31, 0x2E, 0x34, 0x0A, 0x25, 0xE2, 0xE3, 0xCF, 0xD3, 0x0A])); // %PDF-1.4
+    obj(1, function () { add('<< /Type /Catalog /Pages 2 0 R /PageLayout /TwoPageRight /ViewerPreferences << /Direction /R2L >> >>'); });
+    obj(2, function () { add('<< /Type /Pages /Count ' + n + ' /Kids [' + kids.join(' ') + '] >>'); });
+    // タイトルはUTF-16BEで
+    var t = 'FEFF';
+    for (var k = 0; k < (title || '').length; k++) t += ('000' + title.charCodeAt(k).toString(16)).slice(-4);
+    obj(3, function () { add('<< /Title <' + t.toUpperCase() + '> /Producer (Komacho) >>'); });
+    images.forEach(function (im, i) {
+      var pn = 4 + i * 3, cn = pn + 1, xn = pn + 2;
+      var cs = 'q ' + PW_PT.toFixed(2) + ' 0 0 ' + PH_PT.toFixed(2) + ' 0 0 cm /Im0 Do Q';
+      obj(pn, function () {
+        add('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + PW_PT.toFixed(2) + ' ' + PH_PT.toFixed(2) + '] ' +
+          '/Resources << /XObject << /Im0 ' + xn + ' 0 R >> >> /Contents ' + cn + ' 0 R >>');
+      });
+      obj(cn, function () { add('<< /Length ' + cs.length + ' >>\nstream\n' + cs + '\nendstream'); });
+      obj(xn, function () {
+        add('<< /Type /XObject /Subtype /Image /Width ' + im.w + ' /Height ' + im.h +
+          ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ' + im.jpeg.length + ' >>\nstream\n');
+        add(im.jpeg);
+        add('\nendstream');
+      });
+    });
+    var total = 4 + n * 3, xref = len;
+    var x = 'xref\n0 ' + total + '\n0000000000 65535 f \n';
+    for (var j = 1; j < total; j++) x += ('000000000' + offsets[j]).slice(-10) + ' 00000 n \n';
+    add(x + 'trailer\n<< /Size ' + total + ' /Root 1 0 R /Info 3 0 R >>\nstartxref\n' + xref + '\n%%EOF\n');
+    return new Blob(parts, { type: 'application/pdf' });
+  };
+  KC.exportPDF = function (doc, onProgress) {
+    var imgs = [], i = 0;
+    function next() {
+      if (i >= doc.pages.length) return Promise.resolve();
+      if (onProgress) onProgress(i, doc.pages.length);
+      var c = document.createElement('canvas');
+      KC.renderPageTo(c, doc.pages[i], doc, EXPORT_SCALE, {});
+      i++;
+      return canvasToJpeg(c, 0.9).then(function (u8) { imgs.push({ w: c.width, h: c.height, jpeg: u8 }); return next(); });
+    }
+    return next().then(function () { return KC.buildPDF(imgs, doc.title); });
+  };
+
   /* ---------- PSD(レイヤー分け) ---------- */
   function packBits(src) { // Uint8Array -> number[]
     var out = [], n = src.length, i = 0;

@@ -355,3 +355,7 @@ textarea:focus, input:focus { outline: 2px solid var(--blue); outline-offset: -1
 .modal-card .seg { flex-wrap: wrap; }
 .line .kind.shout { background: #fbe4d5; color: #9a3b12; }
 .line .kind.flash { background: #ece6f6; color: #5a3f8a; }
+
+.namefield { display: flex; align-items: center; gap: 6px; }
+.namefield input { flex: 1; min-width: 0; }
+.namefield .ext { color: var(--muted); font-size: 14px; white-space: nowrap; }

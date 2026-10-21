@@ -1,5 +1,5 @@
 /* コマ帖 — オフラインでも開けるようにする */
-var CACHE = 'komacho-v0.1.1';
+var CACHE = 'komacho-v0.1.2';
 var FILES = ['./', 'index.html', 'styles.css', 'config.js', 'js/model.js', 'js/store.js', 'js/exporter.js', 'js/drive.js', 'js/app.js',
   'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 self.addEventListener('install', function (e) {

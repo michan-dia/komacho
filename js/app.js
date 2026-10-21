@@ -1367,6 +1367,47 @@
   });
 
   /* ================= 書き出し ================= */
+  // 書き出す前にファイル名を決める(拡張子はあとから付ける)
+  function askName(defBase, ext) {
+    return new Promise(function (res) {
+      var done = false;
+      modalClose = function () { if (!done) res(null); };
+      openModal(function (c, api) {
+        var inp = el('input', { type: 'text', id: 'exportName', value: defBase, autofocus: true, spellcheck: 'false' });
+        var ok = function () {
+          var raw = inp.value.trim();
+          if (raw.toLowerCase().slice(-ext.length) === ext.toLowerCase()) raw = raw.slice(0, -ext.length); // 拡張子を打っても二重にしない
+          if (!raw.trim()) { inp.focus(); return; }
+          var v = KC.safeName(raw.trim());
+          done = true; res(v + ext); api.close();
+        };
+        inp.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.isComposing) ok(); });
+        c.appendChild(el('h2', { text: 'ファイル名' }));
+        c.appendChild(el('div', { class: 'namefield' }, [inp, el('span', { class: 'ext', text: ext })]));
+        c.appendChild(el('p', { class: 'note', text: '\\ / : * ? " < > | は使えないので、_ に置きかえます。' }));
+        c.appendChild(el('div', { class: 'modal-foot' }, [
+          el('button', { class: 'btn', type: 'button', text: 'やめる', onclick: function () { api.close(); } }),
+          el('button', { class: 'btn primary', type: 'button', text: '書き出す', onclick: ok })
+        ]));
+      });
+    });
+  }
+  // 名前を聞いてから作って保存する。btn があれば作っている間は押せなくする
+  function exportAs(btn, defBase, ext, make) {
+    askName(defBase, ext).then(function (name) {
+      if (!name) return;
+      var old = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = '作っています…'; }
+      setTimeout(function () {
+        Promise.resolve().then(function () { return make(btn); })
+          .then(function (blob) { return KC.saveBlob(blob, name); })
+          .catch(function (e) { toast('書き出せませんでした: ' + (e && e.message || e), 4000); })
+          .then(function () { if (btn) { btn.disabled = false; btn.textContent = old; } });
+      }, 30);
+    });
+  }
+  function textBlob(t) { return new Blob(['\ufeff' + KC.toCRLF(t)], { type: 'text/plain;charset=utf-8' }); }
+
   function renderExport() {
     var b = $('#exportBody'), d = S.doc, st = settings();
     b.innerHTML = '';
@@ -1392,47 +1433,46 @@
           if (!t) { toast('書き出すセリフがありません'); return; }
           KC.copyText(t).then(function (ok) { toast(ok ? 'コピーしました。ストーリーエディターに貼れます' : 'コピーできませんでした'); });
         } }),
-        el('button', { class: 'btn', type: 'button', text: '.txtで保存', onclick: function () {
-          var t = KC.toCRLF(KC.storyText(d, settings()));
-          KC.saveBlob(new Blob(['﻿' + t], { type: 'text/plain;charset=utf-8' }), KC.safeName(d.title) + '_セリフ.txt');
+        el('button', { class: 'btn', type: 'button', text: '.txtで保存', onclick: function (e) {
+          var t = KC.storyText(d, settings());
+          if (!t) { toast('書き出すセリフがありません'); return; }
+          exportAs(null, KC.safeName(d.title) + '_セリフ', '.txt', function () { return textBlob(t); });
         } })
       ]),
       el('p', { class: 'note', text: 'まとめて貼ると、クリスタでは全部が1ページ目に入ります。ページごとに貼るときは、セリフ一覧の各ページの「コピー」を使ってください。' })
     ]);
-    var busy = function (btn, label, job) {
-      btn.disabled = true; var old = btn.textContent; btn.textContent = label;
-      setTimeout(function () {
-        Promise.resolve().then(job).catch(function (e) { toast('書き出せませんでした: ' + (e && e.message || e), 4000); })
-          .then(function () { btn.disabled = false; btn.textContent = old; });
-      }, 30);
-    };
+    var pdfBtn = el('button', { class: 'btn', type: 'button', text: 'PDF(全ページを1つのファイルに)' });
+    pdfBtn.addEventListener('click', function () {
+      exportAs(pdfBtn, KC.safeName(d.title), '.pdf', function (btn) {
+        return KC.exportPDF(d, function (i, n) { btn.textContent = '作っています… ' + (i + 1) + '/' + n; });
+      });
+    });
     var pngBtn = el('button', { class: 'btn', type: 'button', text: 'PNG(ページごと・zip)' });
     pngBtn.addEventListener('click', function () {
-      busy(pngBtn, '作っています…', function () {
-        return KC.exportPNGs(d).then(function (z) { return KC.saveBlob(z, KC.safeName(d.title) + '_PNG.zip'); });
-      });
+      exportAs(pngBtn, KC.safeName(d.title) + '_PNG', '.zip', function () { return KC.exportPNGs(d); });
     });
     var psdBtn = el('button', { class: 'btn', type: 'button', text: 'PSD(レイヤー分け・zip)' });
     psdBtn.addEventListener('click', function () {
-      busy(psdBtn, '作っています…', function () {
-        return KC.exportPSDs(d, function (i, n) { psdBtn.textContent = '作っています… ' + (i + 1) + '/' + n; })
-          .then(function (z) { return KC.saveBlob(z, KC.safeName(d.title) + '_PSD.zip'); });
+      exportAs(psdBtn, KC.safeName(d.title) + '_PSD', '.zip', function (btn) {
+        return KC.exportPSDs(d, function (i, n) { btn.textContent = '作っています… ' + (i + 1) + '/' + n; });
       });
     });
     var g2 = el('div', { class: 'group' }, [
       el('h3', { text: '画像' }),
-      el('div', { class: 'actions' }, [pngBtn, psdBtn]),
-      el('p', { class: 'note', text: 'PSDは「用紙・コマ枠・ラフ・セリフ」の4レイヤーです。大きさは仕上がりB5(1500×2118px)で、クリスタで開くとそのまま下描きの下敷きにできます。' })
+      el('div', { class: 'actions' }, [pdfBtn, pngBtn, psdBtn]),
+      el('p', { class: 'note', text: 'PDFは全ページを1つのファイルにまとめます(見開きは右綴じ)。PSDは「用紙・コマ枠・ラフ・セリフ」の4レイヤーです。大きさは仕上がりB5(1500×2118px)で、クリスタで開くとそのまま下描きの下敷きにできます。' })
     ]);
     var g3 = el('div', { class: 'group' }, [
       el('h3', { text: 'そのほか' }),
       el('div', { class: 'actions' }, [
         el('button', { class: 'btn', type: 'button', text: '見直し用の台本(.txt)', onclick: function () {
-          KC.saveBlob(new Blob(['﻿' + KC.toCRLF(KC.scriptText(d, settings()))], { type: 'text/plain;charset=utf-8' }), KC.safeName(d.title) + '_台本.txt');
+          exportAs(null, KC.safeName(d.title) + '_台本', '.txt', function () { return textBlob(KC.scriptText(d, settings())); });
         } }),
         el('button', { class: 'btn', type: 'button', text: 'バックアップ(.komacho.json)', onclick: function () {
-          var c = Object.assign({}, d); delete c.remoteId; delete c.syncedAt;
-          KC.saveBlob(new Blob([JSON.stringify({ app: 'komacho', version: 1, doc: c })], { type: 'application/json' }), KC.safeName(d.title) + '.komacho.json');
+          exportAs(null, KC.safeName(d.title), '.komacho.json', function () {
+            var c = Object.assign({}, d); delete c.remoteId; delete c.syncedAt;
+            return new Blob([JSON.stringify({ app: 'komacho', version: 1, doc: c })], { type: 'application/json' });
+          });
         } })
       ])
     ]);
