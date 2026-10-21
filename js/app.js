@@ -1368,7 +1368,8 @@
 
   /* ================= 書き出し ================= */
   // 書き出す前にファイル名を決める(拡張子はあとから付ける)
-  function askName(defBase, ext) {
+  // label: 入力欄の右に出す説明(ページごとのときは「p01.png など」)
+  function askName(defBase, ext, label, note) {
     return new Promise(function (res) {
       var done = false;
       modalClose = function () { if (!done) res(null); };
@@ -1377,13 +1378,15 @@
         var ok = function () {
           var raw = inp.value.trim();
           if (raw.toLowerCase().slice(-ext.length) === ext.toLowerCase()) raw = raw.slice(0, -ext.length); // 拡張子を打っても二重にしない
+          if (label) raw = raw.replace(/p\d+$/i, ''); // 「てすとp01」と打っても番号を二重にしない
           if (!raw.trim()) { inp.focus(); return; }
           var v = KC.safeName(raw.trim());
           done = true; res(v + ext); api.close();
         };
         inp.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.isComposing) ok(); });
         c.appendChild(el('h2', { text: 'ファイル名' }));
-        c.appendChild(el('div', { class: 'namefield' }, [inp, el('span', { class: 'ext', text: ext })]));
+        c.appendChild(el('div', { class: 'namefield' }, [inp, el('span', { class: 'ext', text: label || ext })]));
+        if (note) c.appendChild(el('p', { class: 'note', text: note }));
         c.appendChild(el('p', { class: 'note', text: '\\ / : * ? " < > | は使えないので、_ に置きかえます。' }));
         c.appendChild(el('div', { class: 'modal-foot' }, [
           el('button', { class: 'btn', type: 'button', text: 'やめる', onclick: function () { api.close(); } }),
@@ -1404,6 +1407,22 @@
           .catch(function (e) { toast('書き出せませんでした: ' + (e && e.message || e), 4000); })
           .then(function () { if (btn) { btn.disabled = false; btn.textContent = old; } });
       }, 30);
+    });
+  }
+  // ページごとに1ファイルずつ保存する(名前 + p01 …)
+  function exportPages(btn, ext, makeAt) {
+    var d = S.doc, n = d.pages.length;
+    var ex = KC.pageFileName('', 0, n, ext) + (n > 1 ? ' 〜 ' + KC.pageFileName('', n - 1, n, ext) : '');
+    askName(KC.safeName(d.title), ext, ex, 'ページ番号は自動で付きます。例: ' + KC.pageFileName(KC.safeName(d.title), 0, n, ext)).then(function (name) {
+      if (!name) return;
+      var base = name.slice(0, -ext.length);
+      var names = d.pages.map(function (_, i) { return KC.pageFileName(base, i, n, ext); });
+      var old = btn.textContent;
+      btn.disabled = true; btn.textContent = '書き出しています…';
+      KC.saveMany(names, function (i) { return makeAt(d, i); }, function (i) { btn.textContent = '書き出しています… ' + (i + 1) + '/' + n; })
+        .then(function (cnt) { if (cnt) toast(cnt + 'ページ分を書き出しました'); })
+        .catch(function (e) { toast('書き出せませんでした: ' + (e && e.message || e), 4000); })
+        .then(function () { btn.disabled = false; btn.textContent = old; });
     });
   }
   function textBlob(t) { return new Blob(['\ufeff' + KC.toCRLF(t)], { type: 'text/plain;charset=utf-8' }); }
@@ -1447,20 +1466,14 @@
         return KC.exportPDF(d, function (i, n) { btn.textContent = '作っています… ' + (i + 1) + '/' + n; });
       });
     });
-    var pngBtn = el('button', { class: 'btn', type: 'button', text: 'PNG(ページごと・zip)' });
-    pngBtn.addEventListener('click', function () {
-      exportAs(pngBtn, KC.safeName(d.title) + '_PNG', '.zip', function () { return KC.exportPNGs(d); });
-    });
-    var psdBtn = el('button', { class: 'btn', type: 'button', text: 'PSD(レイヤー分け・zip)' });
-    psdBtn.addEventListener('click', function () {
-      exportAs(psdBtn, KC.safeName(d.title) + '_PSD', '.zip', function (btn) {
-        return KC.exportPSDs(d, function (i, n) { btn.textContent = '作っています… ' + (i + 1) + '/' + n; });
-      });
-    });
+    var pngBtn = el('button', { class: 'btn', type: 'button', text: 'PNG(ページごと)' });
+    pngBtn.addEventListener('click', function () { exportPages(pngBtn, '.png', KC.pagePNGBlob); });
+    var psdBtn = el('button', { class: 'btn', type: 'button', text: 'PSD(ページごと・レイヤー分け)' });
+    psdBtn.addEventListener('click', function () { exportPages(psdBtn, '.psd', KC.pagePSDBlob); });
     var g2 = el('div', { class: 'group' }, [
       el('h3', { text: '画像' }),
       el('div', { class: 'actions' }, [pdfBtn, pngBtn, psdBtn]),
-      el('p', { class: 'note', text: 'PDFは全ページを1つのファイルにまとめます(見開きは右綴じ)。PSDは「用紙・コマ枠・ラフ・セリフ」の4レイヤーです。大きさは仕上がりB5(1500×2118px)で、クリスタで開くとそのまま下描きの下敷きにできます。' })
+      el('p', { class: 'note', text: 'PDFは全ページを1つのファイルにまとめます(見開きは右綴じ)。PNGとPSDは1ページずつのファイルで、パソコンでは保存するフォルダを選びます。PSDは「用紙・コマ枠・ラフ・セリフ」の4レイヤーです。大きさは仕上がりB5(1500×2118px)で、クリスタで開くとそのまま下描きの下敷きにできます。' })
     ]);
     var g3 = el('div', { class: 'group' }, [
       el('h3', { text: 'そのほか' }),

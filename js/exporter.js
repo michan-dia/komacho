@@ -101,17 +101,20 @@
   function safeName(s) { return (s || 'name').replace(/[\\/:*?"<>|]/g, '_').trim() || 'name'; }
   KC.safeName = safeName;
 
-  KC.exportPNGs = function (doc, st) {
-    var files = [], i = 0;
-    function next() {
-      if (i >= doc.pages.length) return Promise.resolve();
-      var c = document.createElement('canvas');
-      KC.renderPageTo(c, doc.pages[i], doc, EXPORT_SCALE, {});
-      var name = safeName(doc.title) + '_p' + pad2(i + 1) + '.png';
-      i++;
-      return canvasToU8(c).then(function (u8) { files.push({ name: name, data: u8 }); return next(); });
-    }
-    return next().then(function () { return KC.makeZip(files); });
+  // ページごとのファイル名: 名前 + p01, p02 …(100ページ以上なら p001 …)
+  KC.pageFileName = function (base, idx, total, ext) {
+    var w = Math.max(2, String(total).length);
+    return base + 'p' + ('000' + (idx + 1)).slice(-w) + ext;
+  };
+  KC.pagePNGBlob = function (doc, i) {
+    var c = document.createElement('canvas');
+    KC.renderPageTo(c, doc.pages[i], doc, EXPORT_SCALE, {});
+    return new Promise(function (res) { c.toBlob(res, 'image/png'); });
+  };
+  KC.pagePSDBlob = function (doc, i) {
+    return new Promise(function (res) { setTimeout(res, 0); }).then(function () {
+      return new Blob([KC.pagePSD(doc, doc.pages[i])], { type: 'image/vnd.adobe.photoshop' });
+    });
   };
 
   /* ---------- PDF(全ページを1つのファイルに) ----------
@@ -315,21 +318,6 @@
     ], rgbaOf(comp.c), dpi);
   };
 
-  KC.exportPSDs = function (doc, onProgress) {
-    var files = [], i = 0;
-    function next() {
-      if (i >= doc.pages.length) return Promise.resolve();
-      if (onProgress) onProgress(i, doc.pages.length);
-      return new Promise(function (res) { setTimeout(res, 0); }).then(function () {
-        var u8 = KC.pagePSD(doc, doc.pages[i]);
-        files.push({ name: safeName(doc.title) + '_p' + pad2(i + 1) + '.psd', data: u8 });
-        i++;
-        return next();
-      });
-    }
-    return next().then(function () { return KC.makeZip(files); });
-  };
-
   /* ---------- 保存とコピー ---------- */
   KC.saveBlob = function (blob, name) {
     if (KC.saveHook) return KC.saveHook(blob, name);
@@ -343,6 +331,58 @@
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
     return Promise.resolve(true);
+  };
+
+  /* 複数のファイルを1つずつ保存する
+     names: ファイル名の配列、make(i): i番目の中身(Blob)を作る、onProgress(i, n)
+     ・PC版: 保存先のフォルダを1回選んで、まとめて書きこむ
+     ・Chrome / Edge / Opera(パソコン): フォルダを選んで書きこむ
+     ・それ以外: 1つずつダウンロード */
+  KC.saveMany = function (names, make, onProgress) {
+    var n = names.length;
+    function each(write) {
+      var i = 0;
+      function next() {
+        if (i >= n) return Promise.resolve(n);
+        if (onProgress) onProgress(i, n);
+        var k = i++;
+        return Promise.resolve(make(k)).then(function (blob) { return write(names[k], blob, k); }).then(next);
+      }
+      return next();
+    }
+    if (KC.saveHook) {
+      return each(function (name, blob) {
+        return KC.saveHook(blob, name).then(function (ok) { if (ok === false) throw new Error('保存をやめました'); });
+      });
+    }
+    var nat = window.komachoNative;
+    if (nat && nat.pickFolder) {
+      return nat.pickFolder(names[0]).then(function (dir) {
+        if (!dir) return 0;
+        return each(function (name, blob) {
+          return blob.arrayBuffer().then(function (ab) { return nat.writeInFolder(dir, name, new Uint8Array(ab)); });
+        }).then(function (c) { nat.showFolder(dir, names[0]); return c; });
+      });
+    }
+    if (window.showDirectoryPicker && window.self === window.top) {
+      return window.showDirectoryPicker({ mode: 'readwrite', id: 'komacho-export' }).then(function (dir) {
+        return each(function (name, blob) {
+          return dir.getFileHandle(name, { create: true }).then(function (fh) { return fh.createWritable(); })
+            .then(function (w) { return w.write(blob).then(function () { return w.close(); }); });
+        });
+      }, function (e) {
+        if (e && e.name === 'AbortError') return 0; // 選ぶのをやめた
+        return each(download);
+      });
+    }
+    return each(download);
+    function download(name, blob, k) {
+      var url = URL.createObjectURL(blob), a = document.createElement('a');
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 8000);
+      return new Promise(function (r) { setTimeout(r, k === 0 ? 600 : 350); }); // 続けて保存するので少し待つ
+    }
   };
 
   KC.copyText = function (text) {
