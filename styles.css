@@ -368,3 +368,4 @@ textarea:focus, input:focus { outline: 2px solid var(--blue); outline-offset: -1
 .ovbtn[aria-pressed="true"] { background: var(--blue-soft); color: var(--blue-ink); }
 @media (max-width: 420px) { .topbar .iconbtn { width: 34px; } .pagebtn { padding: 0 9px; } }
 .tool span { white-space: nowrap; letter-spacing: -.02em; }
+a.btn { text-decoration: none; color: inherit; }

@@ -2045,6 +2045,9 @@
       } }) : null,
       el('button', { class: 'btn', type: 'button', text: 'バックアップを読み込む', onclick: function () { $('#importFile').click(); } })
     ])]));
+    b.appendChild(el('div', { class: 'group' }, [el('h3', { text: 'ヘルプ' }), el('div', { class: 'actions' }, [
+      el('a', { class: 'btn', href: window.KOMACHO_HELP_URL || 'help.html', target: '_blank', rel: 'noopener', text: '使い方を見る' })
+    ])]));
     b.appendChild(el('p', { class: 'note', text: 'コマ帖 ' + VERSION + (window.komachoNative ? '(PC版)' : KC.drive.noLogin ? '(ブラウザ版)' : '(Web版)') }));
   }
 
