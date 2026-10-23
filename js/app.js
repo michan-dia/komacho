@@ -5,7 +5,7 @@
   var PW = KC.PW, PH = KC.PH;
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
-  var VERSION = '0.1.0';
+  var VERSION = '1.0.0';
 
   var S = {
     docs: [],
